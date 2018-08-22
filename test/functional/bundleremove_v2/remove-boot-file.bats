@@ -13,13 +13,13 @@ test_setup() {
 
 	run sudo sh -c "$SWUPD bundle-remove $SWUPD_OPTS test-bundle"
 	assert_status_is 0
-	assert_file_not_exists "$TEST_NAME"/target-dir/usr/lib/kernel/testfile
+	assert_file_not_exists "$TARGETDIR"/usr/lib/kernel/testfile
 	expected_output=$(cat <<-EOM
 		Deleting bundle files...
-		Total deleted files: 2
+		Total deleted files: 1
 		Successfully removed 1 bundle
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 }

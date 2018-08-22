@@ -11,7 +11,6 @@ test_setup() {
 	# add bundle2 as dependencies of bundle1 and bundle 3 as dependency of bundle2
 	add_dependency_to_manifest "$TEST_NAME"/web-dir/10/Manifest.test-bundle1 test-bundle2
 	add_dependency_to_manifest "$TEST_NAME"/web-dir/10/Manifest.test-bundle2 test-bundle3
-	update_hashes_in_mom "$TEST_NAME"/web-dir/10/Manifest.MoM
 
 }
 
@@ -21,11 +20,10 @@ test_setup() {
 	assert_status_is 0
 	expected_output=$(cat <<-EOM
 		Bundles included by test-bundle1:
-
 		test-bundle2
 		test-bundle3
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 }

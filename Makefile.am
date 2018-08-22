@@ -25,6 +25,7 @@ swupd_SOURCES = \
 	src/download.c \
 	src/extra_files.c \
 	src/filedesc.c \
+	src/fs.c \
 	src/fullfile.c \
 	src/globals.c \
 	src/hash.c \
@@ -71,8 +72,6 @@ swupd_LDADD = \
 
 verifytime_SOURCES = src/verifytime.c
 bin_PROGRAMS += verifytime
-
-dist_bin_SCRIPTS = swupd-add-pkg
 
 EXTRA_DIST += \
 	data/check-update.service \
@@ -138,6 +137,7 @@ BATS = \
 	test/functional/bundleadd_v2/add-skip-scripts.bats \
 	test/functional/bundleadd/verify-fix-path/test.bats \
 	test/functional/bundleadd_v2/add-verify-fix-path.bats \
+	test/functional/bundleadd_v2/add-client-certificate.bats \
 	test/functional/bundlelist/all/test.bats \
 	test/functional/bundlelist_v2/list-all.bats \
 	test/functional/bundlelist/deps-flat/test.bats \
@@ -156,6 +156,7 @@ BATS = \
 	test/functional/bundlelist_v2/list-no-deps.bats \
 	test/functional/bundlelist/none-has-deps/test.bats \
 	test/functional/bundlelist_v2/list-none-has-deps.bats \
+	test/functional/bundlelist_v2/list-client-certificate.bats \
 	test/functional/bundleremove/boot-file/test.bats \
 	test/functional/bundleremove_v2/remove-boot-file.bats \
 	test/functional/bundleremove/include/test.bats \
@@ -170,6 +171,7 @@ BATS = \
 	test/functional/bundleremove/remove-multiple/test.bats \
 	test/functional/bundleremove_v2/remove-multiple.bats \
 	test/functional/bundleremove_v2/remove-rc.bats \
+	test/functional/bundleremove_v2/remove-client-certificate.bats \
 	test/functional/checkupdate/new-version/test.bats \
 	test/functional/checkupdate_v2/chk-update-new-version.bats \
 	test/functional/checkupdate/no-server-content/test.bats \
@@ -180,18 +182,26 @@ BATS = \
 	test/functional/checkupdate_v2/chk-update-slow-server.bats \
 	test/functional/checkupdate/version-match/test.bats \
 	test/functional/checkupdate_v2/chk-update-version-match.bats \
+	test/functional/checkupdate_v2/chk-update-client-certificate.bats \
 	test/functional/completion/basic/test.bats \
+	test/functional/completion_v2/completion-basic.bats \
 	test/functional/hashdump/file-hash/test.bats \
 	test/functional/hashdump/file-hash-no-path-prefix/test.bats \
+	test/functional/hashdump_v2/hashdump-file-hash.bats \
 	test/functional/mirror/createdir/test.bats \
+	test/functional/mirror_v2/mirror-createdir.bats \
 	test/functional/mirror/createdir-negative/test.bats \
+	test/functional/mirror_v2/mirror-createdir-negative.bats \
 	test/functional/search/content-check-negfull-path/test.bats \
 	test/functional/search/content-check-neglibtest/test.bats \
+	test/functional/search_v2/search-content-check-negative.bats \
 	test/functional/search/content-check-posbin/test.bats \
 	test/functional/search/content-check-posebin/test.bats \
 	test/functional/search/content-check-posfull-path/test.bats \
 	test/functional/search/content-check-poslib32/test.bats \
 	test/functional/search/content-check-poslib64/test.bats \
+	test/functional/search_v2/search-content-check-positive.bats \
+	test/functional/search_v2/search-client-certificate.bats \
 	test/functional/update/apply-full-file-delta/test.bats \
 	test/functional/update/boot-file/test.bats \
 	test/functional/update/boot-skip/test.bats \
@@ -221,6 +231,7 @@ BATS = \
 	test/functional/update/re-update-bad-os-release/test.bats \
 	test/functional/update/slow-server/test.bats \
 	test/functional/update/statedir-bad-hash/test.bats \
+	test/functional/update_v2/update-client-certificate.bats \
 	test/functional/verify/add-missing-directory/test.bats \
 	test/functional/verify/add-missing-include/test.bats \
 	test/functional/verify/add-missing-include-old/test.bats \
@@ -241,7 +252,8 @@ BATS = \
 	test/functional/verify/latest-missing/test.bats \
 	test/functional/verify/picky-ghosted/test.bats \
 	test/functional/verify/picky-ghosted-missing/test.bats \
-	test/functional/verify/skip-scripts/test.bats
+	test/functional/verify/skip-scripts/test.bats \
+	test/functional/verify_v2/verify-client-certificate.bats
 
 dist_check_SCRIPTS = $(BATS)
 # Must be run before all other tests
@@ -309,8 +321,7 @@ MANPAGES = \
 	docs/check-update.timer.4 \
 	docs/swupd-update.service.4 \
 	docs/swupd-update.timer.4 \
-	docs/update-triggers.target.4 \
-	docs/swupd-add-pkg.4
+	docs/update-triggers.target.4
 
 dist_man_MANS = \
 	$(MANPAGES)

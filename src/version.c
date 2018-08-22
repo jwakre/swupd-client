@@ -158,11 +158,6 @@ int check_versions(int *current_version,
 		return -1;
 	}
 
-	/* set preferred version and content server urls */
-	if (*current_version < 0) {
-		return -1;
-	}
-
 	if (requested_version != -1) {
 		if (requested_version <= *current_version) {
 			fprintf(stderr, "Requested version for update (%d) must be greater than current version (%d)\n",
@@ -213,8 +208,12 @@ int read_mix_version_file(char *filename, char *path_prefix)
 void check_mix_versions(int *current_version, int *server_version, char *path_prefix)
 {
 	*current_version = read_mix_version_file("/usr/share/clear/version", path_prefix);
-	*server_version = read_mix_version_file(MIX_STATE_DIR "version/format1/latest", path_prefix);
+	char *format_file;
+	string_or_die(&format_file, MIX_STATE_DIR "version/format%s/latest", format_string);
+	*server_version = read_mix_version_file(format_file, path_prefix);
+	free_string(&format_file);
 }
+
 int update_device_latest_version(int version)
 {
 	FILE *file = NULL;

@@ -17,14 +17,12 @@ test_setup() {
 	assert_dir_exists "$TEST_NAME/target-dir/usr/bin/test"
 	expected_output=$(cat <<-EOM
 		Starting download of remaining update content. This may take a while...
-		.
 		Finishing download of update content...
 		Installing bundle(s) files...
-		.
 		Calling post-update helper scripts.
 		Successfully installed 1 bundle
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 } 

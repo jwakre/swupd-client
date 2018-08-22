@@ -3,7 +3,10 @@
 FUNC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_FILENAME=$(basename "$BATS_TEST_FILENAME")
 TEST_NAME=${TEST_FILENAME%.bats}
+THEME_DIRNAME="$BATS_TEST_DIRNAME"
+
 export TEST_NAME
+export THEME_DIRNAME
 export FUNC_DIR
 export SWUPD_DIR="$FUNC_DIR/../.."
 export SWUPD="$SWUPD_DIR/swupd"
@@ -33,6 +36,8 @@ export EBADTIME=22  # System time is bad
 export EDOWNLOADPACKS=23  # Pack download failed
 export EBADCERT=24  # unable to verify server SSL certificate
 
+# global constant
+export zero_hash="0000000000000000000000000000000000000000000000000000000000000000"
 
 generate_random_content() { 
 
@@ -55,6 +60,93 @@ generate_random_name() {
 
 }
 
+# Creates public and private key
+# Parameters:
+# - key_path: path to private key
+# - cert_path: path to public key
+generate_certificate() {
+
+	local key_path=$1
+	local cert_path=$2
+
+	# If incorrect number of parameters are received show usage
+	if [ $# -ne 2 ]; then
+		cat <<-EOM
+			Usage:
+			    generate_certificate <key_path> <cert_path>
+			EOM
+		return
+	fi
+
+	# generate self-signed public and private key
+	sudo openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+		-keyout "$key_path" -out "$cert_path" \
+		-subj "/C=US/ST=Oregon/L=Portland/O=Company Name/OU=Org/CN=localhost"
+
+}
+
+# Creates the trusted certificate store and adds one certificate
+# Parameters:
+# - cert_path: path of certificate to add to trust store
+create_trusted_cacert() {
+
+	local cert_path=$1
+	local counter=0
+	local subj_hash
+
+	# If incorrect number of parameters are received show usage
+	if [ $# -ne 1 ]; then
+		cat <<-EOM
+			Usage:
+			    create_trusted_cacert <certificate_path>
+			EOM
+		return
+	fi
+
+	# only one test can use the trusted certificate store at the same time to
+	# avoid certificate contamination from other tests and race conditions.
+	until mkdir "$CACERT_DIR"; do
+		sleep 1
+		if [ "$counter" -eq "1000" ]; then
+			echo "Timeout: creating trusted certificate"
+			return 1
+		fi
+		counter=$["$counter" + 1]
+	done
+
+	# only allow the test that create CACERT_DIR to erase it
+	echo '1' > "$CACERT_DIR/$TEST_NAME.lock"
+
+	# the public key names in the CACERT_DIR must use the following format to
+	# be included by swupd in the trust store: <subject hash>.<number>
+	subj_hash=$(openssl x509 -subject_hash -noout -in "$cert_path")
+	ln -s "$cert_path" "$CACERT_DIR/$subj_hash.0"
+
+}
+
+# Deletes the trusted certificate store
+destroy_trusted_cacert() {
+
+	# only the test that created CACERT_DIR can erase it which stops
+	# tests from erasing CACERT_DIR when they fail before creating it
+	if [ -f "$CACERT_DIR/$TEST_NAME.lock" ]; then
+		rm -rf "$CACERT_DIR"
+	fi
+
+}
+
+print_stack() {
+
+	echo "An error occurred"
+	echo "Function stack (most recent on top):"
+	for func in ${FUNCNAME[*]}; do
+		if [ "$func" != "print_stack" ] && [ "$func" != "terminate" ]; then
+			echo -e "\\t$func"
+		fi
+	done
+
+}
+
 terminate() {
 
 	# since the library could be sourced and run from an interactive shell
@@ -64,8 +156,10 @@ terminate() {
 	local msg=$1
 	local param
 	case "$-" in
-		*i*)	: ${param:?"$msg, exiting..."} ;;
-		*)		echo "$msg, exiting..."
+		*i*)	print_stack
+				: "${param:?"$msg, exiting..."}" ;;
+		*)		print_stack
+				echo "$msg, exiting..."
 				exit 1;;
 	esac
 
@@ -106,11 +200,22 @@ validate_param() {
 # - STREAM: the content to be written
 write_to_protected_file() {
 
-        local arg
-        [ "$1" = "-a" ] && { arg=-a ; shift ; }
-        local file=${1?Missing output file in write_to_protected_file}
-        shift
-        printf "$@" | sudo tee $arg "$file" >/dev/null
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    write_to_protected_file [-a] <file> <stream>
+
+			Options:
+			    -a    If used the text will be appended to the file, otherwise it will be overwritten
+			EOM
+		return
+	fi
+	local arg
+	[ "$1" = "-a" ] && { arg=-a ; shift ; }
+	local file=${1?Missing output file in write_to_protected_file}
+	shift
+	printf "$@" | sudo tee $arg "$file" >/dev/null
 
 }
 
@@ -121,12 +226,41 @@ set_env_variables() {
 
 	local env_name=$1
 	local path
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    set_env_variables <environment_name>
+			EOM
+		return
+	fi
 	validate_path "$env_name"
 	path=$(dirname "$(realpath "$env_name")")
 
+	export CLIENT_CERT_DIR="$TEST_NAME/target-dir/etc/swupd"
+	export CLIENT_CERT="$CLIENT_CERT_DIR/client.pem"
+	export CACERT_DIR="/tmp/swupd_test_certificates" # trusted key store path
+	export PORT_FILE="/tmp/$TEST_NAME-port_file.txt" # stores web server port
+	export SERVER_PID_FILE="/tmp/$TEST_NAME-pid_file.txt" # stores web server pid
+
+	# Add environment variables for PORT and SERVER_PID when web server used
+	if [ -f "$PORT_FILE" ]; then
+		export PORT=$(cat "$PORT_FILE")
+		export SWUPD_OPTS_HTTPS="-S $path/$env_name/state -p $path/$env_name/target-dir -F staging -u https://localhost:$PORT/$env_name/web-dir -C $FUNC_DIR/Swupd_Root.pem -I"
+	fi
+
+	if [ -f "$SERVER_PID_FILE" ]; then
+		export SERVER_PID=$(cat "$SERVER_PID_FILE")
+	fi
+
 	export SWUPD_OPTS="-S $path/$env_name/state -p $path/$env_name/target-dir -F staging -u file://$path/$env_name/web-dir -C $FUNC_DIR/Swupd_Root.pem -I"
 	export SWUPD_OPTS_NO_CERT="-S $path/$env_name/state -p $path/$env_name/target-dir -F staging -u file://$path/$env_name/web-dir"
+	export SWUPD_OPTS_MIRROR="-p $path/$env_name/target-dir"
+	export SWUPD_OPTS_NO_FMT="-S $path/$env_name/state -p $path/$env_name/target-dir -u file://$path/$env_name/web-dir -C $FUNC_DIR/Swupd_Root.pem -I"
 	export TEST_DIRNAME="$path"/"$env_name"
+	export WEBDIR="$env_name"/web-dir
+	export TARGETDIR="$env_name"/target-dir
+	export STATEDIR="$env_name"/state
 
 }
 
@@ -139,6 +273,15 @@ create_dir() {
 	local path=$1
 	local hashed_name
 	local directory
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_dir <path>
+			EOM
+		return
+	fi
 	validate_path "$path"
 	
 	# most directories have the same hash, so we only need one directory
@@ -163,6 +306,15 @@ create_file() {
  
 	local path=$1
 	local hashed_name
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_file <path>
+			EOM
+		return
+	fi
 	validate_path "$path"
 
 	generate_random_content | sudo tee "$path/testfile" > /dev/null
@@ -186,6 +338,15 @@ create_link() {
 	local path=$1
 	local pfile=$2
 	local hashed_name
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_link <path> [file_to_point_to]
+			EOM
+		return
+	fi
 	validate_path "$path"
 	
 	# if no file is specified, create one
@@ -210,6 +371,17 @@ create_tar() {
 	local path
 	local item_name
 	local skip_param_validation=false
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_tar [--skip-validation] <item>
+
+			Options:
+			    --skip-validation    If set, the function parameters will not be validated
+			EOM
+		return
+	fi
 	[ "$1" = "--skip-validation" ] && { skip_param_validation=true ; shift ; }
 	local item=$1
 
@@ -237,6 +409,15 @@ create_manifest() {
 	local path=$1
 	local name=$2
 	local version
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_manifest <path> <bundle_name>
+			EOM
+		return
+	fi
 	validate_path "$path"
 	validate_param "$name"
 
@@ -260,7 +441,7 @@ create_manifest() {
 #                      are not validated, so use this option carefully
 # - MANIFEST: the relative path to the manifest file
 # - ITEM: the relative path to the item (file, directory, symlink) to be added
-# - ITEM_PATH: the absolute path of the item in the target system when installed
+# - PATH_IN_FS: the absolute path of the item in the target system when installed
 add_to_manifest() { 
 
 	local item_type
@@ -278,6 +459,18 @@ add_to_manifest() {
 	local item=$2
 	local item_path=$3
 
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    add_to_manifest [--skip-validation] <manifest> <item> <item_path_in_fs>
+
+			Options:
+			    --skip-validation    If set, the validation of parameters will be skipped
+			EOM
+		return
+	fi
+
 	if [ "$skip_param_validation" = false ]; then
 		validate_item "$manifest"
 		validate_item "$item"
@@ -292,7 +485,7 @@ add_to_manifest() {
 	filecount=$((filecount + 1))
 	sudo sed -i "s/filecount:.*/filecount:\\t$filecount/" "$manifest"
 	# add to contentsize 
-	contentsize=$(sudo cat "$manifest" | grep contentsize | awk '{ print $2 }')
+	contentsize=$(awk '/contentsize/ { print $2}' "$manifest")
 	contentsize=$((contentsize + item_size))
 	# get the item type
 	if [ "$(basename "$manifest")" = Manifest.MoM ]; then
@@ -322,7 +515,7 @@ add_to_manifest() {
 	elif [ -d "$item" ]; then
 		item_type=D
 	fi
-	# if the file is in the /usr/lib/kernel dir then it is a boot file
+	# if the file is in the /usr/lib/{kernel, modules} dir then it is a boot file
 	if [ "$(dirname "$item_path")" = "/usr/lib/kernel" ] || [ "$(dirname "$item_path")" = "/usr/lib/modules/" ]; then
 		boot_type="b"
 	fi
@@ -350,16 +543,42 @@ add_dependency_to_manifest() {
 	local dependency=$2
 	local path
 	local manifest_name
-	local bundle_name
+	local version
+	local pre_version
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    add_dependency_to_manifest <manifest> <dependency>
+			EOM
+		return
+	fi
 	validate_item "$manifest"
-	path=$(dirname "$manifest")
-	manifest_name=$(basename "$manifest")
-	bundle_name=${manifest_name#Manifest.}
+	validate_param "$dependency"
 
+	path=$(dirname "$(dirname "$manifest")")
+	version=$(basename "$(dirname "$manifest")")
+	manifest_name=$(basename "$manifest")
+
+	# if the provided manifest does not exist in the current version, it means
+	# we need to copy it from a previous version.
+	# this could happen for example if a manifest is created in one version (e.g. 10),
+	# but the dependency should be added in a different, future version (e.g. 20)
+	if [ ! -e "$path"/"$version"/"$manifest_name" ]; then
+		pre_version="$version"
+		while [ "$pre_version" -gt 0 ] && [ ! -e "$path"/"$pre_version"/"$manifest_name" ]; do
+				pre_version=$(awk '/previous/ { print $2 }' "$path"/"$pre_version"/Manifest.MoM)
+		done
+		sudo cp "$path"/"$pre_version"/"$manifest_name" "$path"/"$version"/"$manifest_name"
+		sudo sed -i "s/version:.*/version:\\t$version/" "$manifest"
+		sudo sed -i "s/previous:.*/previous:\\t$pre_version/" "$manifest"
+	fi
+	sudo sed -i "s/timestamp:.*/timestamp:\\t$(date +"%s")/" "$manifest"
 	sudo sed -i "/contentsize:.*/a includes:\\t$dependency" "$manifest"
 	# If a manifest tar already exists for that manifest, renew the manifest tar
 	sudo rm -f "$manifest".tar
 	create_tar "$manifest"
+	update_hashes_in_mom "$path"/"$version"/Manifest.MoM
 
 }
 
@@ -371,11 +590,34 @@ remove_from_manifest() {
 
 	local manifest=$1
 	local item=$2
+	local filecount
+	local contentsize
+	local item_size
+	local item_hash
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    remove_from_manifest <manifest> <item>
+			EOM
+		return
+	fi
 	validate_item "$manifest"
 	validate_param "$item"
 
 	# replace every / with \/ in item (if any)
 	item="${item////\\/}"
+	# decrease filecount and contentsize
+	filecount=$(awk '/filecount/ { print $2}' "$manifest")
+	filecount=$((filecount - 1))
+	sudo sed -i "s/filecount:.*/filecount:\\t$filecount/" "$manifest"
+	if [ "$(basename "$manifest")" != Manifest.MoM ]; then
+		contentsize=$(awk '/contentsize/ { print $2}' "$manifest")
+		item_hash=$(get_hash_from_manifest "$manifest" "$item")
+		item_size=$(stat -c "%s" "$(dirname "$manifest")"/files/"$item_hash")
+		contentsize=$((contentsize - item_size))
+		sudo sed -i "s/contentsize:.*/contentsize:\\t$contentsize/" "$manifest"
+	fi
 	# remove the lines that match from the manifest
 	sudo sed -i "/\\t$item$/d" "$manifest"
 	sudo sed -i "/\\t$item\\t/d" "$manifest"
@@ -386,6 +628,8 @@ remove_from_manifest() {
 	if [ "$(basename "$manifest")" = Manifest.MoM ]; then
 		sudo rm -f "$manifest".sig
 		sign_manifest "$manifest"
+	else
+		update_hashes_in_mom "$(dirname "$manifest")"/Manifest.MoM
 	fi
 
 }
@@ -398,21 +642,42 @@ update_hashes_in_mom() {
 
 	local manifest=$1
 	local path
+	local bundles
 	local bundle
-	local manifest_name
+	local bundle_old_hash
+	local bundle_new_hash
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    update_hashes_in_mom <manifest>
+			EOM
+		return
+	fi
 	validate_item "$manifest"
 	path=$(dirname "$manifest")
 
 	IFS=$'\n'
-	if [ $(basename "$manifest") = Manifest.MoM ]; then
-		bundles=($(sudo cat "$manifest" | grep -x "M\.\.\..*" | awk '{ print $4 }'))
+	if [ "$(basename "$manifest")" = Manifest.MoM ]; then
+		bundles=("$(sudo cat "$manifest" | grep -x "M\.\.\..*" | awk '{ print $4 }')")
 		for bundle in ${bundles[*]}; do
-			remove_from_manifest "$manifest" $bundle
-			add_to_manifest "$manifest" "$path"/Manifest.$bundle $bundle
+			# if the hash of the manifest changed, update it
+			bundle_old_hash=$(get_hash_from_manifest "$manifest" "$bundle")
+			bundle_new_hash=$(sudo "$SWUPD" hashdump "$path"/Manifest."$bundle" 2> /dev/null)
+			if [ "$bundle_old_hash" != "$bundle_new_hash" ] && [ "$bundle_new_hash" != "$zero_hash" ]; then
+				# replace old hash with new hash
+				sudo sed -i "/\\t$bundle_old_hash\\t/s/\(....\\t\).*\(\\t.*\\t\)/\1$bundle_new_hash\2/g" "$manifest"
+				# replace old version with new version
+				sudo sed -i "/\\t$bundle_new_hash\\t/s/\(....\\t.*\\t\).*\(\\t\)/\1$(basename "$path")\2/g" "$manifest"
+			fi
 		done
-		# since the MoM has changed, sign it again
+		# re-order items on the manifest so they are in the correct order based on version
+		sudo sort -t$'\t' -k3 -s -h -o "$manifest" "$manifest"
+		# since the MoM has changed, sign it again and update its tar
 		sudo rm -f "$manifest".sig
 		sign_manifest "$manifest"
+		sudo rm -f "$manifest".tar
+		create_tar "$manifest"
 	else
 		echo "The provided manifest is not the MoM"
 		return 1
@@ -427,6 +692,15 @@ update_hashes_in_mom() {
 sign_manifest() {
 
 	local manifest=$1
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    sign_manifest <manifest>
+			EOM
+		return
+	fi
 	validate_item "$manifest"
 
 	sudo openssl smime -sign -binary -in "$manifest" \
@@ -443,10 +717,18 @@ get_hash_from_manifest() {
 
 	local manifest=$1
 	local item=$2
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    get_hash_from_manifest <manifest> <name_in_fs>
+			EOM
+		return
+	fi
 	validate_item "$manifest"
 	validate_param "$item"
 
-	hash=$(sudo cat "$manifest" | grep "$item" | awk '{ print $2 }')
+	hash=$(sudo cat "$manifest" | grep $'\t'"$item"$ | awk '{ print $2 }')
 	echo "$hash"
 
 }
@@ -459,6 +741,16 @@ set_current_version() {
 
 	local env_name=$1
 	local new_version=$2
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		echo "$(cat <<-EOM
+			Usage:
+			    set_current_version <environment_name> <new_version>
+			EOM
+		)"
+		return
+	fi
 	validate_path "$env_name"
 
 	sudo sed -i "s/VERSION_ID=.*/VERSION_ID=$new_version/" "$env_name"/target-dir/usr/lib/os-release
@@ -473,6 +765,15 @@ set_latest_version() {
 
 	local env_name=$1
 	local new_version=$2
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    set_latest_version <environment_name> <new_version>
+			EOM
+		return
+	fi
 	validate_path "$env_name"
 
 	write_to_protected_file "$env_name"/web-dir/version/formatstaging/latest "$new_version"
@@ -482,13 +783,28 @@ set_latest_version() {
 # Creates a test environment with the basic directory structure needed to
 # validate the swupd client
 # Parameters:
+# - -e: if this option is set the test environment is created empty (withouth bundle os-core)
 # - ENVIRONMENT_NAME: the name of the test environment, this should be typically the test name
 # - VERSION: the version to use for the test environment, if not specified the default is 10
 create_test_environment() { 
 
+	local empty=false
+	[ "$1" = "-e" ] && { empty=true ; shift ; }
 	local env_name=$1 
 	local version=${2:-10}
 	local mom
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    create_test_environment [-e] <environment_name> [initial_version]
+
+			Options:
+			    -e    If set, the test environment is created empty, otherwise it will have
+			          bundle os-core in the web-dir and installed by default.
+			EOM
+		return
+	fi
 	validate_param "$env_name"
 	
 	# create all the files and directories needed
@@ -513,6 +829,9 @@ create_test_environment() {
 		printf 'BUG_REPORT_URL="https://bugs.clearlinux.org/jira"\n'
 	} | sudo tee "$env_name"/target-dir/usr/lib/os-release > /dev/null
 	sudo mkdir -p "$env_name"/target-dir/usr/share/clear/bundles
+	sudo mkdir -p "$env_name"/target-dir/usr/share/defaults/swupd
+	printf '1' | sudo tee "$env_name"/target-dir/usr/share/defaults/swupd/format > /dev/null
+	sudo mkdir -p "$env_name"/target-dir/etc
 
 	# state files & dirs
 	sudo mkdir -p "$env_name"/state/{staged,download,delta,telemetry}
@@ -522,8 +841,10 @@ create_test_environment() {
 	set_env_variables "$env_name"
 
 	# every environment needs to have at least the os-core bundle so this should be
-	# added by default to every test environment
-	create_bundle -L -n os-core -v "$version" -f /usr/bin/core "$env_name"
+	# added by default to every test environment unless specified otherwise
+	if [ "$empty" = false ]; then
+		create_bundle -L -n os-core -v "$version" -f /core "$env_name"
+	fi
 
 }
 
@@ -533,6 +854,15 @@ create_test_environment() {
 destroy_test_environment() { 
 
 	local env_name=$1
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    destroy_test_environment <environment_name>
+			EOM
+		return
+	fi
 	validate_path "$env_name"
 
 	# since the action to be performed is very destructive, at least
@@ -547,11 +877,113 @@ destroy_test_environment() {
 
 }
 
+# creates a web server to host fake swupd content with or without certifiates
+start_web_server() {
+
+	local port
+	local server_args
+	local server_pid
+	local status
+
+	cb_usage() {
+		echo $(cat <<-EOF
+		Usage:
+		    start_web_server [-k] <server priv key> [-p] <server pub key> [-s]
+
+		Options:
+		    start_web_server [-c] <client pub key> [-p] <server pub key> [-k] <server priv key> [-s]
+
+		Options:
+		    -c    Path to public key to be used for client certificate authentication
+		    -k    Path to server private key which must correspond to the provided server public key
+		    -p    Path to server public key which enables SSL authentication
+		    -s    Use a slow update server
+
+		Notes:
+		    - When the server is using SSL authentication, a pair of corresponding public and private keys must be passed
+		      as arguments.
+
+		Example of usage:
+
+		    The following command will create a web server that uses SSL authentication and inserts a delay for content
+		    updates.
+
+		    start_web_server -k /private_key.pem -p /public_key.pem -s
+
+		EOF
+		)
+	}
+
+	set -f  # turn off globbing
+	while getopts :c:k:p:s opt; do
+		case "$opt" in
+			c)	server_args="$server_args --client_cert $OPTARG" ;;
+			k)	server_args="$server_args --server_key $OPTARG" ;;
+			p)	server_args="$server_args --server_cert $OPTARG" ;;
+			s)	server_args="$server_args --slow_server" ;;
+			*)	cb_usage
+				return ;;
+		esac
+	done
+	set +f  # turn globbing back on
+
+	# start web server and write port/pid numbers to their respective files
+	python3 $FUNC_DIR/server.py $server_args --port_file $PORT_FILE &
+	server_pid=$!
+
+	echo "$server_pid" > "$SERVER_PID_FILE"
+
+	# wait for server to be available
+	for i in $(seq 1 100); do
+		if [ -f $PORT_FILE ]; then
+			port=$(cat "$PORT_FILE")
+			status=0
+
+			# use https when the server is using certificates
+			if [[ "$server_args" = *"--server_cert"* ]]; then
+				curl https://localhost:$port || status=$?
+			else
+				curl http://localhost:$port || status=$?
+			fi
+
+			# the web server is ready for connections when 0 or 60 is returned. When using
+			# https, exit status 60 will be returned because certificates are not included
+			# in the curl test command
+			if [ "$status" -eq 0 ] || [ "$status" -eq 60 ]; then
+				break
+			fi
+		fi
+
+		if [ "$i" -eq 100 ]; then
+			echo "Timeout: web server not ready"
+			return 1
+		fi
+
+		sleep 1
+	done
+
+}
+
+# kills the test web server and removes the files it creates
+destroy_web_server() {
+
+	local server_pid
+
+	if [ -f "$SERVER_PID_FILE" ]; then
+		server_pid=$(cat "$SERVER_PID_FILE")
+
+		kill "$server_pid"
+		rm -f "$SERVER_PID_FILE"
+		rm -f "$PORT_FILE"
+	fi
+
+}
+
 # Creates a bundle in the test environment. The bundle can contain files, directories or symlinks.
 create_bundle() { 
 
 	cb_usage() { 
-		echo $(cat <<-EOF
+		cat <<-EOM
 		Usage:
 		    create_bundle [-L] [-n] <bundle_name> [-v] <version> [-d] <list of dirs> [-f] <list of files> [-l] <list of links> ENV_NAME
 
@@ -569,6 +1001,8 @@ create_bundle() {
 		    - for every symlink created a related file will be created and added to the bundle as well (except for dangling links)
 		    - if the '-f' or '-l' options are used, and the directories where the files live don't exist,
 		      they will be automatically created and added to the bundle for each file
+		    - if instead of creating a new file you want to reuse an existing one, you can do this by adding ':' followed by the
+		      path to the file, for example '-f /usr/bin/test-1:my_environment/web-dir/10/files/\$file_hash'
 
 		Example of usage:
 
@@ -578,10 +1012,34 @@ create_bundle() {
 
 		    create_bundle -n test-bundle -f /usr/bin/test-1,/usr/bin/test-2,/etc/systemd/test-3 -l /etc/test-link my_test_env
 
-		EOF
-		)
+		EOM
 	}
-	
+
+	add_dirs() {
+
+		if [[ "$val" != "/"* ]]; then
+			val=/"$val"
+		fi
+		# if the directories the file is don't exist, add them to the bundle,
+		# do not add all the directories of the tracking file /usr/share/clear/bundles,
+		# this file is added in every bundle by default, it would add too much overhead
+		# for most tests
+		fdir=$(dirname "${val%:*}")
+		if [ ! "$(sudo cat "$manifest" | grep -x "D\\.\\.\\..*$fdir")" ] && [ "$fdir" != "/usr/share/clear/bundles" ] \
+		&& [ "$fdir" != "/" ]; then
+			bundle_dir=$(create_dir "$files_path")
+			add_to_manifest "$manifest" "$bundle_dir" "$fdir"
+			# add each one of the directories of the path if they are not in the manifest already
+			while [ "$(dirname "$fdir")" != "/" ]; do
+				fdir=$(dirname "$fdir")
+				if [ ! "$(sudo cat "$manifest" | grep -x "D\\.\\.\\..*$fdir")" ]; then
+					add_to_manifest "$manifest" "$bundle_dir" "$fdir"
+				fi
+			done
+		fi
+
+	}
+
 	local OPTIND
 	local opt
 	local dir_list
@@ -596,6 +1054,11 @@ create_bundle() {
 	local manifest
 	local local_bundle=false
 
+	# If no parameters are received show help
+	if [ $# -eq 0 ]; then
+		create_bundle -h
+		return
+	fi
 	set -f  # turn off globbing
 	while getopts :v:d:f:l:b:n:L opt; do
 		case "$opt" in
@@ -616,11 +1079,6 @@ create_bundle() {
 	# set default values
 	bundle_name=${bundle_name:-$(generate_random_name test-bundle-)}
 	version=${version:-10}
-	if [ -z "$dir_list" ] && [ -z "$file_list" ] && [ -z "$link_list" ] && [ -z "$dangling_link_list" ] ; then
-		# if nothing was specified to be created, at least create
-		# one directory which is the bare minimum for a bundle
-		dir_list=(/usr/bin)
-	fi
 	# all bundles should include their own tracking file, so append it to the
 	# list of files to be created in the bundle
 	file_list+=(/usr/share/clear/bundles/"$bundle_name")
@@ -649,8 +1107,8 @@ create_bundle() {
 	# Create a zero pack for the bundle and add the directory to it
 	sudo tar -cf "$version_path"/pack-"$bundle_name"-from-0.tar --exclude="$bundle_dir"/*  "$bundle_dir"
 	for val in "${dir_list[@]}"; do
-		# the "/" directory is not allowed in the manifest
-		if [ val != "/" ]; then
+		add_dirs
+		if [ "$val" != "/" ]; then
 			add_to_manifest "$manifest" "$bundle_dir" "$val"
 			if [ "$local_bundle" = true ]; then
 				sudo mkdir -p "$target_path$val"
@@ -660,21 +1118,15 @@ create_bundle() {
 	
 	# 3) Create the requested file(s)
 	for val in "${file_list[@]}"; do
-		# if the directories the file is don't exist, add them to the bundle
-		# there are 2 exceptions, the dir of the tracking file and "\"
-		fdir=$(dirname "$val")
-		if [ ! "$(sudo cat "$manifest" | grep -x "D\\.\\.\\..*$fdir")" ] && [ "$fdir" != "/usr/share/clear/bundles" ] && [ "$fdir" != "/" ]; then
-			bundle_dir=$(create_dir "$files_path")
-			add_to_manifest "$manifest" "$bundle_dir" "$fdir"
-			# add each one of the directories of the path if they are not in the manifest already
-			while [ "$(dirname "$fdir")" != "/" ]; do
-				fdir=$(dirname "$fdir")
-				if [ ! "$(sudo cat "$manifest" | grep -x "D\\.\\.\\..*$fdir")" ]; then
-					add_to_manifest "$manifest" "$bundle_dir" "$fdir"
-				fi
-			done
+		add_dirs
+		# if the user wants to use an existing file, use it, else create a new one
+		if [[ "$val" = *":"* ]]; then
+			bundle_file="${val#*:}"
+			val="${val%:*}"
+			validate_item "$bundle_file"
+		else
+			bundle_file=$(create_file "$files_path")
 		fi
-		bundle_file=$(create_file "$files_path")
 		if [ "$DEBUG" == true ]; then
 			echo "file -> $bundle_file"
 		fi
@@ -691,6 +1143,9 @@ create_bundle() {
 	
 	# 4) Create the requested link(s) in the bundle
 	for val in "${link_list[@]}"; do
+		if [[ "$val" != "/"* ]]; then
+			val=/"$val"
+		fi
 		# if the directory the link is doesn't exist,
 		# add it to the bundle (except if the directory is "/")
 		fdir=$(dirname "$val")
@@ -722,6 +1177,9 @@ create_bundle() {
 	
 	# 5) Create the requested dangling link(s) in the bundle
 	for val in "${dangling_link_list[@]}"; do
+		if [[ "$val" != "/"* ]]; then
+			val=/"$val"
+		fi
 		# if the directory the link is doesn't exist,
 		# add it to the bundle (except if the directory is "/")
 		fdir=$(dirname "$val")
@@ -755,6 +1213,7 @@ create_bundle() {
 	create_tar "$version_path"/Manifest.MoM
 
 	# 8) Sign the manifest MoM
+	sudo rm -f "$version_path"/Manifest.MoM.sig
 	sign_manifest "$version_path"/Manifest.MoM
 
 	# 9) Create the subscription to the bundle if the local_bundle flag is enabled
@@ -771,6 +1230,18 @@ create_bundle() {
 # - BUNDLE_MANIFEST: the manifest of the bundle to be removed
 remove_bundle() {
 
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    remove_bundle [-L] <bundle_manifest>
+
+			Options:
+			    -L   If set, the bundle will be removed from the target-dir only,
+			         otherwise it is removed from both target-dir and web-dir
+			EOM
+		return
+	fi
 	local remove_local=false
 	[ "$1" = "-L" ] && { remove_local=true ; shift ; }
 	local bundle_manifest=$1
@@ -801,7 +1272,7 @@ remove_bundle() {
 	# may be used by another bundle)
 	dir_names=($(awk '/^D...\t/ { print $4 }' "$bundle_manifest"))
 	for dname in ${dir_names[@]}; do
-		sudo rmdir "$target_path$dname" 2> /dev/null
+		sudo rmdir --ignore-fail-on-non-empty "$target_path$dname" 2> /dev/null
 	done
 	if [ "$remove_local" = false ]; then
 		# remove all files that are in the manifest from web-dir
@@ -836,6 +1307,14 @@ install_bundle() {
 	local manifest_file
 	local bundle_name
 
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    install_bundle <bundle_manifest>
+			EOM
+		return
+	fi
 	validate_item "$bundle_manifest"
 	target_path=$(dirname "$bundle_manifest" | cut -d "/" -f1)/target-dir
 	files_path=$(dirname "$bundle_manifest")/files
@@ -881,6 +1360,14 @@ install_bundle() {
 clean_state_dir() {
 
 	local env_name=$1
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    clean_state_dir <environment_name>
+			EOM
+		return
+	fi
 	validate_path "$env_name"
 
 	sudo rm -rf "$env_name"/state/{staged,download,delta,telemetry}
@@ -896,6 +1383,15 @@ generate_test() {
 
 	local name=$1
 	local path
+
+	# If no parameters are received show usage
+	if [ $# -eq 0 ]; then
+		cat <<-EOM
+			Usage:
+			    generate_test <test_name>
+			EOM
+		return
+	fi
 	validate_param "$name"
 
 	path=$(dirname "$name")/
@@ -918,8 +1414,13 @@ generate_test() {
 		printf '\t# global cleanup\n\n'
 		printf '}\n\n'
 		printf '@test "<test description>" {\n\n'
-		printf '\trun sudo sh -c "$SWUPD <swupd_command> $SWUPD_OPTS <command_options>"\n'
-		printf '\t# <validations>\n\n'
+		printf '\trun sudo sh -c "$SWUPD <swupd_command> $SWUPD_OPTS <command_options>"\n\n'
+		printf '\t# assert_status_is 0\n'
+		printf '\t# expected_output=$(cat <<-EOM\n'
+		printf '\t# \t<expected output>\n'
+		printf '\t# EOM\n'
+		printf '\t# )\n'
+		printf '\t# assert_is_output "$expected_output"\n\n'
 		printf '}\n\n'
 	} > "$path$name".bats
 	# make the test script executable
@@ -982,13 +1483,17 @@ test_setup() {
 # Default test_teardown
 test_teardown() {
 
-	destroy_test_environment "$TEST_NAME"
+	if [ "$DEBUG_TEST" != true ]; then
+		destroy_test_environment "$TEST_NAME"
+	fi
 
 }
 
 #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 # The section below contains functions useful for consistent test validation and output
 #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+sep="------------------------------------------------------------------"
 
 print_assert_failure() {
 
@@ -1004,10 +1509,46 @@ print_assert_failure() {
 
 }
 
+use_ignore_list() {
+
+	local ignore_enabled=$1
+	local filtered_output
+	validate_param "$ignore_enabled"
+
+	# if selected, remove things in the ignore list from the actual output
+	if [ "$ignore_enabled" = true ]; then
+		# always remove blank lines and lines with only dots
+		filtered_output=$(echo "$output" | sed -E '/^$/d' | sed -E '/^\.+$/d')
+		# now remove lines that are included in any of the ignore-lists
+		# there are 3 possible ignore-lists that the function is going
+		# to recognize (in order of precedence):
+		# - <functional_tests_directory>/<test_theme_directory>/<test_name>.ignore-list
+		# - <functional_tests_directory>/<test_theme_directory>/ignore-list
+		# - <functional_tests_directory>/ignore-list
+		if [ -f "$THEME_DIRNAME"/"$TEST_NAME".ignore-list ]; then
+			ignore_list="$THEME_DIRNAME"/"$TEST_NAME".ignore-list
+		elif [ -f "$THEME_DIRNAME"/ignore-list ]; then
+			ignore_list="$THEME_DIRNAME"/ignore-list
+		elif [ -f "$FUNC_DIR"/ignore-list ]; then
+			ignore_list="$FUNC_DIR"/ignore-list.global
+		fi
+		while IFS= read -r line; do
+			# if the pattern from the file has a "/" escape it first so it does
+			# not confuses the sed command
+			line="${line////\\/}"
+			filtered_output=$(echo "$filtered_output" | sed -E "/^$line$/d")
+		done < "$ignore_list"
+	else
+		filtered_output="$output"
+	fi
+	echo "$filtered_output"
+
+}
+
 assert_status_is() {
 
 	local expected_status=$1
-	validate_param expected_status
+	validate_param "$expected_status"
 
 	if [ -z "$status" ]; then
 		echo "The \$status environment variable is empty."
@@ -1032,7 +1573,7 @@ assert_status_is() {
 assert_status_is_not() {
 
 	local not_expected_status=$1
-	validate_param not_expected_status
+	validate_param "$not_expected_status"
 
 	if [ -z "$status" ]; then
 		echo "The \$status environment variable is empty."
@@ -1057,7 +1598,7 @@ assert_status_is_not() {
 assert_dir_exists() {
 
 	local vdir=$1
-	validate_param vdir
+	validate_param "$vdir"
 
 	if [ ! -d "$vdir" ]; then
 		print_assert_failure "Directory $vdir should exist, but it does not"
@@ -1069,7 +1610,7 @@ assert_dir_exists() {
 assert_dir_not_exists() {
 
 	local vdir=$1
-	validate_param vdir
+	validate_param "$vdir"
 
 	if [ -d "$vdir" ]; then
 		print_assert_failure "Directory $vdir should not exist, but it does"
@@ -1081,7 +1622,7 @@ assert_dir_not_exists() {
 assert_file_exists() {
 
 	local vfile=$1
-	validate_param vfile
+	validate_param "$vfile"
 
 	if [ ! -f "$vfile" ]; then
 		print_assert_failure "File $vfile should exist, but it does not"
@@ -1093,7 +1634,7 @@ assert_file_exists() {
 assert_file_not_exists() {
 
 	local vfile=$1
-	validate_param vfile
+	validate_param "$vfile"
 
 	if [ -f "$vfile" ]; then
 		print_assert_failure "File $vfile should not exist, but it does"
@@ -1104,14 +1645,18 @@ assert_file_not_exists() {
 
 assert_in_output() {
 
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
 	local expected_output=$1
-	local sep="------------------------------------------------------------------"
-	validate_param expected_output
+	validate_param "$expected_output"
 
-	if [[ ! "$output" == *"$expected_output"* ]]; then
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ ! "$actual_output" == *"$expected_output"* ]]; then
 		print_assert_failure "The following text was not found in the command output:\\n$sep\\n$expected_output\\n$sep"
 		echo -e "Difference:\\n$sep"
-		echo "$(diff -u <(echo "$expected_output") <(echo "$output"))"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
 		return 1
 	fi
 
@@ -1119,14 +1664,132 @@ assert_in_output() {
 
 assert_not_in_output() {
 
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
 	local expected_output=$1
-	local sep="------------------------------------------------------------------"
-	validate_param expected_output
+	validate_param "$expected_output"
 
-	if [[ "$output" == *"$expected_output"* ]]; then
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ "$actual_output" == *"$expected_output"* ]]; then
 		print_assert_failure "The following text was found in the command output and should not have:\\n$sep\\n$expected_output\\n$sep"
 		echo -e "Difference:\\n$sep"
-		echo "$(diff -u <(echo "$expected_output") <(echo "$output"))"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_is_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ ! "$actual_output" == "$expected_output" ]]; then
+		print_assert_failure "The following text was not the command output:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_is_not_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ "$actual_output" == "$expected_output" ]]; then
+		print_assert_failure "The following text was the command output and should not have:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_regex_in_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ ! "$actual_output" =~ $expected_output ]]; then
+		print_assert_failure "The following text (regex) was not found in the command output:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_regex_not_in_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ "$actual_output" =~ $expected_output ]]; then
+		print_assert_failure "The following text (regex) was found in the command output and should not have:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_regex_is_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ ! "$actual_output" =~ ^$expected_output$ ]]; then
+		print_assert_failure "The following text (regex) was not the command output:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
+		return 1
+	fi
+
+}
+
+assert_regex_is_not_output() {
+
+	local actual_output
+	local ignore_switch=true
+	local ignore_list
+	[ "$1" = "--identical" ] && { ignore_switch=false ; shift ; }
+	local expected_output=$1
+	validate_param "$expected_output"
+
+	actual_output=$(use_ignore_list "$ignore_switch")
+	if [[ "$actual_output" =~ ^$expected_output$ ]]; then
+		print_assert_failure "The following text (regex) was the command output and should not have:\\n$sep\\n$expected_output\\n$sep"
+		echo -e "Difference:\\n$sep"
+		echo "$(diff -u <(echo "$expected_output") <(echo "$actual_output"))"
 		return 1
 	fi
 
@@ -1136,8 +1799,8 @@ assert_equal() {
 
 	local val1=$1
 	local val2=$2
-	validate_param val1
-	validate_param val2
+	validate_param "$val1"
+	validate_param "$val2"
 
 	if [ "$val1" != "$val2" ]; then
 		return 1
@@ -1149,11 +1812,38 @@ assert_not_equal() {
 
 	local val1=$1
 	local val2=$2
-	validate_param val1
-	validate_param val2
+	validate_param "$val1"
+	validate_param "$val2"
 
 	if [ "$val1" = "$val2" ]; then
 		return 1
+	fi
+
+}
+
+assert_files_equal() {
+
+	local val1=$1
+	local val2=$2
+	validate_item "$val1"
+	validate_item "$val2"
+
+	diff -q "$val1" "$val2"
+
+}
+
+assert_files_not_equal() {
+
+	local val1=$1
+	local val2=$2
+	validate_item "$val1"
+	validate_item "$val2"
+
+	if diff -q "$val1" "$val2" > /dev/null; then
+		echo "Files $val1 and $val2 are equal"
+		return 1
+	else
+		return 0
 	fi
 
 }

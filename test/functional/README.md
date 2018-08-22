@@ -165,6 +165,22 @@ To include tests to be run in the CI system:
 TBD  
 <br/>
 
+### Debugging Tests
+
+As mentioned in the [test principles](#test-principles), automated tests should
+create their own test environment including all needed dependencies when the test
+starts, and should clean up after themselves once the test is over. This means
+the test environment will be deleted as soon as the test finishes running.
+Sometimes it is necessary to debug faulty tests, and therefore a persistent test
+environment is required. If you want to temporarily skip the deletion of the test
+environment, you can achieve this by setting the DEBUG_TEST environmental variable
+to *true*.
+```bash
+$ DEBUG_TEST=true bats <theme_directory>/<test_script>.bats
+```
+Note: Remember you will have to delete this test environment manually before running
+the test again or it could have unexpected effects.
+
 ## Test Fixtures
 ### Test Environment
 A test environment is nothing but a directory that contains the necessary file
@@ -205,7 +221,7 @@ necessary for the bundle like files, directories, manifests, packs, etc.
 Use the following command to create a bundle with two files called "test-bundle" in
 the "my_env" test environment.
 ```bash
-create_bundle -n test-bundle -f /foo/bar/test-file1,/baz/test-file2 my_env
+$ create_bundle -n test-bundle -f /foo/bar/test-file1,/baz/test-file2 my_env
 ```
 By creating that bundle the following objects will also be created:
 * A hashed directory (to be used for the /foo, /foo/bar and /baz directories)
@@ -219,7 +235,7 @@ randomly generated so hashes are different)
 
 Another example:
 ```bash
-create_bundle -L -n another-bundle -d /some_dir -f /baz/test-file -l /test-link my_env
+$ create_bundle -L -n another-bundle -d /some_dir -f /baz/test-file -l /test-link my_env
 ```
 This bundle, besides having characteristics similar to the previous bundle will
 have this new characteristics:
@@ -229,6 +245,18 @@ symbolic link is pointing to
 * Since the -L flag was used, the bundle will not only be created in the directory
 for content download, but it will also be installed in the target file system, this
 is useful for tests that need a pre-installed bundle as prerequisite
+
+Sometimes it is useful to create a bundle using an existing file in your system
+instead of letting the helper functions create a random file for you. This can be
+achieved by using the ':' character and specifying the file you want to use.  
+For example:  
+```bash
+$ create_bundle -L -n test-bundle -f /foo/bar/test-file:"$WEBDIR"/10/files/"$hashed_name" my_env
+```
+This will create a bundle that has the file */foo/bar/test-file* in the manifest and
+will refer to the file specified by you. Note that it is your responsibility to copy
+that file to the appropriate directory first (*"$WEBDIR"/\<version\>/files*), and to
+name it properly according to its hash.
 
 The following are some of the functions provided by the test library to create and
 handle test objects:
@@ -302,44 +330,112 @@ run <some_command>
 assert_file_not_exists /some/file
 ```
 
-*assert_in_output*  
-passes if the provided text is included in the command output, fails otherwise  
+*assert_is_output*  
+passes if the provided text matches the whole command output, fails otherwise  
+**NOTE:** dots and blank lines are removed by default from the output before comparing it to the expected output,
+if you want to disable this behavior use the assertion with the *--identical* option   
 Examples:  
 ```bash
 # one line strings
 run <some_command>
-assert_in_output "Successfully installed 1 bundle"
+assert_is_output "Some output"
 
 # multi-line strings
+run <some_command>
+expected_output=$(cat <<-EOM
+  Some text that needs
+  to match exactly with
+  the whole command output
+EOM
+)
+assert_is_output "$expected_output"
+
+# multi-line strings with dots and blank lines
+run <some_command>
+expected_output=$(cat <<-EOM
+  Some text that has dots
+  ..
+  and some empty lines
+  
+  and you want those to be included when
+  comparing the output
+EOM
+)
+assert_is_output --identical "$expected_output"
+```
+
+*assert_is_not_output*  
+passes if the provided text does not match the whole command output, fails otherwise  
+Examples:  
+```bash
+run <some_command>
+assert_is_not_output "This should not be the command output"
+```
+
+*assert_in_output*  
+passes if the provided text is included in the command output (partial match), fails otherwise  
+Examples:  
+```bash
 run <other_command>
 expected_output=$(cat <<-EOM
-  Some multi-ine text that needs to be present
-  in the exact order
-  some more lines, bla bla
+  Some multi-line output
+  some more lines,
+  bla bla
 EOM
 )
 assert_in_output "$expected_output"
-
-# combination of both
-run <yet_another_command>
-expected_output=$(cat <<-EOM
-  Some multi-ine text that needs to be present
-  in the exact order
-  some more lines, bla bla
-EOM
-)
-assert_in_output "some literall text"
-assert_in_output "$expected_output"
-assert_in_output "more text to be checked"
 ```
 
 *assert_not_in_output*  
-passes if the provided text is not included in the command output, fails otherwise  
+passes if the provided text is not included in the command output (partial match), fails otherwise  
 Examples:  
 ```bash
-# one line strings
 run <some_command>
 assert_not_in_output "Error"
+```
+
+*assert_regex_is_output*  
+similar to assert_is_output but this assertion receives a regular expression, passes
+if the provided regular expression matches the whole command output, fails otherwise  
+Examples:  
+```bash
+# remember to skip characters that are part of the expected
+# output that match special regex characters like .*?()[] 
+run <some_command>
+expected_output=$(cat <<-EOM
+  Some expected text that can have
+  regex characters like .* in it
+  \(skipping these parentheses\)\.
+EOM
+)
+assert_regex_is_output "$expected_output"
+```
+
+*assert_regex_is_not_output*  
+similar to assert_is_not_output but this assertion receives a regular expression, passes
+if the provided regular expression does not match the command output, fails otherwise  
+Examples:  
+```bash
+run <some_command>
+assert_regex_is_not_output "Error .?"
+```
+
+*assert_regex_in_output*  
+similar to assert_in_output but this assertion receives a regular expression, passes
+if the provided regular expression is part of the command output (partial match), fails otherwise  
+Examples:  
+```bash
+run <some_command>
+assert_regex_in_output "This is part .* of the output"
+```
+
+*assert_regex_not_in_output*  
+similar to assert_not_in_output but this assertion receives a regular expression, passes
+if the provided regular expression is not part of the command output (partial match), fails otherwise  
+Examples:  
+```bash
+run <some_command>
+assert_regex_not_in_output "Error."
 ```
 
 *assert_equal*  
@@ -356,4 +452,43 @@ Example:
 ```bash
 run <some_command>
 assert_not_equal "$variable1" "$variable2"
+```
+
+*assert_files_equal*  
+passes if the two files provided are equal, fails otherwise  
+Example:  
+```bash
+run <some_command>
+assert_files_equal foo/bar foo/baz
+```
+
+*assert_files_not_equal*  
+passes if the two files provided are not equal, fails otherwise  
+Example:  
+```bash
+run <some_command>
+assert_files_not_equal foo/bar foo/baz
+```
+
+### Ignore lists
+When using assertions that compare the command output to an expected output (for example
+assert_is_output, assert_in_output, etc.), blank lines and lines containing only
+dots are removed by default before comparing outputs.  
+Besides removing empty lines and lines with dots from the output, it is also possible to
+use an *ignore list* to remove other patterns that are not important for a test when using these assertions.  
+
+There are three different ignore list files that can be used (but only one can be used at a time):
+- <functional_tests_directory>/<test_theme_directory>/<test_name>.ignore-list: this file is intended
+to specify an ignore-list for only one particular test.
+- <functional_tests_directory>/<test_theme_directory>/ignore-list: this file is intended to
+be used as an ignore-list for a group of test cases that are similar (the same theme).
+- <functional_tests_directory>/ignore-list.global: this is a global ignore-list intended to be
+used as a fallback for all tests.
+
+To disable the use of ignore lists you can use the *--identical* option with every assertion
+that checks a command output.  
+Example:  
+```bash
+assert_is_output --identical "$expected_output"
+assert_regex_not_in_output --identical "$some_other_output"
 ```

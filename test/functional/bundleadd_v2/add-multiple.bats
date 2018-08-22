@@ -22,20 +22,15 @@ test_setup() {
 	assert_file_exists "$TEST_NAME/target-dir/media/lib/file2"
 	expected_output=$(cat <<-EOM
 		Downloading packs...
-
 		Extracting test-bundle1 pack for version 10
-		.
 		Extracting test-bundle2 pack for version 10
-
 		Starting download of remaining update content. This may take a while...
-		..
 		Finishing download of update content...
 		Installing bundle(s) files...
-		...
 		Calling post-update helper scripts.
 		Successfully installed 2 bundles
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 }

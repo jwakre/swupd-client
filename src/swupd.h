@@ -37,6 +37,7 @@ extern "C" {
 #define MIX_CERT MIX_DIR "Swupd_Root.pem"
 #define MIX_BUNDLES_DIR MIX_STATE_DIR "mix-bundles/"
 #define MIXED_FILE SWUPD_DEFAULTS "mixed"
+#define SSL_CLIENT_CERT "/etc/swupd/client.pem"
 
 #define DEFAULT_VERSION_URL_PATH "/usr/share/defaults/swupd/versionurl"
 #define MIRROR_VERSION_URL_PATH "/etc/swupd/mirror_versionurl"
@@ -394,6 +395,11 @@ typedef enum telem_prio_t {
 	TELEMETRY_CRIT
 } telem_prio_t;
 extern void telemetry(telem_prio_t level, const char *class, const char *fmt, ...);
+
+/* fs.c */
+extern long get_available_space(const char *path);
+/* Calculate the total contentsize of a manifest list */
+extern long get_manifest_list_contentsize(struct list *manifests);
 
 extern struct file **manifest_files_to_array(struct manifest *manifest);
 extern int enforce_compliant_manifest(struct file **a, struct file **b, int searchsize, int size);

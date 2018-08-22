@@ -11,7 +11,6 @@ test_setup() {
 	# add bundle1 as dependencies of bundle2 and bundle 2 as dependency of bundle3
 	add_dependency_to_manifest "$TEST_NAME"/web-dir/10/Manifest.test-bundle2 test-bundle1
 	add_dependency_to_manifest "$TEST_NAME"/web-dir/10/Manifest.test-bundle3 test-bundle2
-	update_hashes_in_mom "$TEST_NAME"/web-dir/10/Manifest.MoM
 
 }
 
@@ -26,11 +25,10 @@ test_setup() {
 		 #   |-- is-required-by
 		 # * is-also-required-by
 		 # ...
-
 		  * test-bundle2
 		    |-- test-bundle3
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 }

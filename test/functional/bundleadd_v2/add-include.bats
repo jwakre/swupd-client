@@ -9,8 +9,6 @@ test_setup() {
 	create_bundle -n test-bundle2 -f /bar/test-file2 "$TEST_NAME"
 	# add test-bundle2 as a dependency of test-bundle1
 	add_dependency_to_manifest "$TEST_NAME"/web-dir/10/Manifest.test-bundle1 test-bundle2
-	# since we modified one manifest we need to update that in MoM too, so re add the bundle manifest
-	update_hashes_in_mom "$TEST_NAME"/web-dir/10/Manifest.MoM
 
 }
 
@@ -23,14 +21,12 @@ test_setup() {
 	assert_file_exists "$TEST_NAME"/target-dir/bar/test-file2
 	expected_output=$(cat <<-EOM
 		Starting download of remaining update content. This may take a while...
-		.
 		Finishing download of update content...
 		Installing bundle(s) files...
-		..
 		Calling post-update helper scripts.
 		Successfully installed 1 bundle
 	EOM
 	)
-	assert_in_output "$expected_output"
+	assert_is_output "$expected_output"
 
 }
