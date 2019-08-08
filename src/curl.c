@@ -181,6 +181,10 @@ int check_connection(const char *test_capath, char *url)
 	}
 }
 
+bool isCurlInitialized() {
+	return curl != NULL;
+}
+
 int swupd_curl_init(char *url)
 {
 	CURLcode curl_ret;
@@ -246,12 +250,17 @@ int swupd_curl_init(char *url)
 exit:
 	if (ret != 0) {
 		/* curl failed to initialize */
-		error("Failed to connect to update server: %s\n", globals.version_url);
-		info("Possible solutions for this problem are:\n"
-		     "\tCheck if your network connection is working\n"
-		     "\tFix the system clock\n"
-		     "\tRun 'swupd info' to check if the urls are correct\n"
-		     "\tCheck if the server SSL certificate is trusted by your system ('clrtrust generate' may help)\n");
+		if (globals.state_dir_cache != NULL) {
+			info("Failed to connect to update server, must update from state dir cache\n");
+		} else {
+			error("Failed to connect to update server: %s\n", globals.version_url);
+			info("Possible solutions for this problem are:\n"
+			     "\tCheck if your network connection is working\n"
+			     "\tFix the system clock\n"
+			     "\tRun 'swupd info' to check if the urls are correct\n"
+			     "\tCheck if the server SSL certificate is trusted by your system ('clrtrust generate' may help)\n");
+		}
+
 		swupd_curl_deinit();
 	}
 

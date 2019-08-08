@@ -822,7 +822,7 @@ enum swupd_code verify_main(void)
 	}
 
 	ret = swupd_init(SWUPD_ALL);
-	if (ret != 0) {
+	if (ret != 0 && (cmdline_option_statedir_cache == NULL || ret != SWUPD_CURL_INIT_FAILED)) {
 		error("Failed diagnose initialization, exiting now\n");
 		goto clean_args_and_exit;
 	}

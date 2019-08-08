@@ -211,6 +211,11 @@ int download_subscribed_packs(struct list *subs, struct manifest *mom, bool requ
 	struct swupd_curl_parallel_handle *download_handle;
 	char *packs_size;
 
+	if (!isCurlInitialized()) {
+		info("Curl was not initialized, skipping pack download\n");
+		return 0;
+	}
+
 	/* make a new list with only the bundles we actually need to download packs for */
 	for (iter = list_head(subs); iter; iter = iter->next) {
 		char *targetfile;

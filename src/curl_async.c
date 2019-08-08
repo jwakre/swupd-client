@@ -180,6 +180,10 @@ static void reevaluate_number_of_parallel_downloads(struct swupd_curl_parallel_h
 
 struct swupd_curl_parallel_handle *swupd_curl_parallel_download_start(size_t max_xfer)
 {
+	if (!isCurlInitialized()) {
+		return NULL;
+	}
+
 	struct swupd_curl_parallel_handle *h = calloc(1, sizeof(struct swupd_curl_parallel_handle));
 	ON_NULL_ABORT(h);
 

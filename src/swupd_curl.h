@@ -71,6 +71,13 @@ typedef int (*swupd_curl_progress_cb)(void *clientp, int64_t dltotal, int64_t dl
 int swupd_curl_init(char *url);
 
 /**
+ * @brief Check whether curl is initialized
+ *
+ * @returns true when curl is initialized
+ */
+bool isCurlInitialized();
+
+/**
  * @brief Test a connection with a server.
  *
  * @param url The url to use to test server connectivity
