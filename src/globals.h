@@ -40,6 +40,7 @@ extern struct globals {
 	char *mounted_dirs;
 	char *path_prefix;
 	char *state_dir;
+	char *state_dir_cache;
 	char *version_url;
 	int max_retries;
 	int retry_delay;
@@ -77,6 +78,7 @@ size_t get_max_xfer(size_t default_max_xfer);
 void save_cmd(char **argv);
 
 bool set_path_prefix(char *path);
+bool set_state_dir_cache(char *path);
 bool set_default_content_url(void);
 bool set_default_version_url(void);
 void set_default_path_prefix(void);

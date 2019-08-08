@@ -139,15 +139,30 @@ int download_fullfiles(struct list *files, int *num_downloads)
 	/* make a new list with only the files we actually need to download */
 	for (iter = list_head(files); iter; iter = iter->next) {
 		char *targetfile;
+		char *targetfile_cache;
 		file = iter->data;
 
 		if (file->is_deleted || file->do_not_update) {
 			continue;
 		}
 
+		/* Check the statedir and statedir-cache for the expected fullfile. When the
+		 * fullfile exists in the statedir-cache, it is copied to the statedir. */
 		string_or_die(&targetfile, "%s/staged/%s", globals.state_dir, file->hash);
 		if (lstat(targetfile, &stat) != 0 || !verify_file(file, targetfile)) {
-			need_download = list_append_data(need_download, file);
+			bool download = true;
+			if (globals.state_dir_cache != NULL) {
+				string_or_die(&targetfile_cache, "%s/staged/%s", globals.state_dir_cache, file->hash);
+				if (lstat(targetfile_cache, &stat) == 0 && verify_file(file, targetfile_cache))  {
+					if(link_or_copy_all(targetfile_cache, targetfile) == 0) {
+						download = false;
+					}
+				}
+				free_string(&targetfile_cache);
+			}
+			if (download) {
+				need_download = list_append_data(need_download, file);
+			}
 		}
 
 		free_string(&targetfile);

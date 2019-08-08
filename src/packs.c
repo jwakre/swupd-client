@@ -214,6 +214,7 @@ int download_subscribed_packs(struct list *subs, struct manifest *mom, bool requ
 	/* make a new list with only the bundles we actually need to download packs for */
 	for (iter = list_head(subs); iter; iter = iter->next) {
 		char *targetfile;
+		char *targetfile_cache;
 		sub = iter->data;
 
 		if (!is_installed_bundle(sub->component)) {
@@ -237,7 +238,20 @@ int download_subscribed_packs(struct list *subs, struct manifest *mom, bool requ
 		/* make sure the file is not already in the client system */
 		string_or_die(&targetfile, "%s/pack-%s-from-%i-to-%i.tar", globals.state_dir, sub->component, sub->oldversion, sub->version);
 		if (lstat(targetfile, &stat) != 0 || stat.st_size != 0) {
-			need_download = list_append_data(need_download, sub);
+			bool download = true;
+			/* Check the statedir-cache before downloading over the network. */
+			if (globals.state_dir_cache != NULL) {
+				string_or_die(&targetfile_cache, "%s/pack-%s-from-%i-to-%i.tar", globals.state_dir_cache, sub->component, sub->oldversion, sub->version);
+				if (lstat(targetfile_cache, &stat) == 0 && stat.st_size == 0) {
+					if (link_or_copy(targetfile_cache, targetfile) == 0) {
+						download = false;
+					}
+				}
+				free_string(&targetfile_cache);
+			}
+			if (download) {
+				need_download = list_append_data(need_download, sub);
+			}
 		}
 
 		free_string(&targetfile);
