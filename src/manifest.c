@@ -302,21 +302,30 @@ static void set_untracked_manifest_files(struct manifest *manifest)
 static void remove_manifest_files(char *filename, int version, char *hash)
 {
 	char *file;
+	char *statedirs[] = {globals.state_dir, globals.state_dir_cache};
+	int len = sizeof(statedirs) / sizeof(statedirs[0]);
 
 	warn("Removing corrupt Manifest.%s artifacts and re-downloading...\n", filename);
-	string_or_die(&file, "%s/%i/Manifest.%s", globals.state_dir, version, filename);
-	unlink(file);
-	free_string(&file);
-	string_or_die(&file, "%s/%i/Manifest.%s.tar", globals.state_dir, version, filename);
-	unlink(file);
-	free_string(&file);
-	string_or_die(&file, "%s/%i/Manifest.%s.sig", globals.state_dir, version, filename);
-	unlink(file);
-	free_string(&file);
-	if (hash != NULL) {
-		string_or_die(&file, "%s/%i/Manifest.%s.%s", globals.state_dir, version, filename, hash);
+
+	for (int i=0; i<len; i++) {
+		if (statedirs[i] == NULL) {
+			continue;
+		}
+
+		string_or_die(&file, "%s/%i/Manifest.%s", statedirs[i], version, filename);
 		unlink(file);
 		free_string(&file);
+		string_or_die(&file, "%s/%i/Manifest.%s.tar", statedirs[i], version, filename);
+		unlink(file);
+		free_string(&file);
+		string_or_die(&file, "%s/%i/Manifest.%s.sig", statedirs[i], version, filename);
+		unlink(file);
+		free_string(&file);
+		if (hash != NULL) {
+			string_or_die(&file, "%s/%i/Manifest.%s.%s", statedirs[i], version, filename, hash);
+			unlink(file);
+			free_string(&file);
+		}
 	}
 }
 
